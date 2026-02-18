@@ -1,0 +1,25 @@
+{
+  "name": "proyecto-kilometros-empresa",
+  "version": "1.0.0",
+  "description": "Automatización de registro de kilómetros desde Google Calendar a Sheets",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "deploy": "node scripts/deploy.js",
+    "setup": "node scripts/setup.js",
+    "test": "node tests/test-all.js",
+    "lint": "eslint src/"
+  },
+  "keywords": ["google-apps-script", "calendar", "sheets", "maps", "kilometraje"],
+  "author": "Tu Empresa",
+  "license": "MIT",
+  "dependencies": {
+    "googleapis": "^105.0.0",
+    "dotenv": "^16.0.0",
+    "node-fetch": "^2.6.7"
+  },
+  "devDependencies": {
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0"
+  }
+}

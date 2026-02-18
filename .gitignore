@@ -1,0 +1,27 @@
+# Dependencias
+node_modules/
+package-lock.json
+
+# Archivos de configuración
+.env
+*.pem
+*.p12
+*.key
+credentials.json
+token.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de configuración local
+config.local.js
+*.local.js
+
+# Archivos de test
+coverage/
+.nyc_output/
