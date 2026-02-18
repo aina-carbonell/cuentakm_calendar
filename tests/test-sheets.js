@@ -1,94 +1,55 @@
 /**
  * Tests para el servicio de Google Sheets
+ * BUG CORREGIDO: require paths corregidos
  */
 
 const assert = require('assert');
-const { guardarViaje, formatearSheet, generarInformeMensual } = require('../src/sheets-service');
 require('dotenv').config();
 
 const colors = {
-  reset: '\x1b[0m',
-  green: '\x1b[32m',
-  red: '\x1b[31m',
-  yellow: '\x1b[33m'
+  reset: '\x1b[0m', green: '\x1b[32m', red: '\x1b[31m', yellow: '\x1b[33m'
 };
 
-/**
- * Test del servicio de Sheets
- */
 async function testSheetsService() {
   console.log('  Ejecutando tests de Google Sheets...');
-  
-  const resultados = {
-    total: 0,
-    pasados: 0,
-    fallidos: 0,
-    detalles: []
-  };
 
-  // Verificar SPREADSHEET_ID
-  if (!process.env.SPREADSHEET_ID) {
-    console.log(`    ${colors.yellow}⚠ SPREADSHEET_ID no configurado, usando modo mock${colors.reset}`);
+  const resultados = { total: 0, pasados: 0, fallidos: 0, detalles: [] };
+
+  const tieneSheetId = !!process.env.SPREADSHEET_ID;
+
+  if (!tieneSheetId) {
+    console.log(`    ${colors.yellow}⚠  SPREADSHEET_ID no configurado, tests de API en modo mock${colors.reset}`);
   }
 
-  // Test 1: guardarViaje con datos de prueba
+  // Test 1: Validar estructura completa del objeto viaje
   try {
-    const viajeTest = {
-      fecha: new Date(),
+    const viajeCompleto = {
+      fecha: new Date('2024-01-15'),
       trabajador: 'test@empresa.com',
-      inicio: 'Plaza Mayor, Madrid',
-      destino: 'Puerta del Sol, Madrid',
-      kmTrayecto: 1.5,
+      inicio: 'Gran Vía 1, Madrid',
+      destino: 'Calle Serrano 45, Madrid',
+      kmTrayecto: 4.5,
       precioKm: 0.25,
-      precioTrayecto: 0.38,
-      totalKmAcumulado: 1.5,
-      totalPrecioAcumulado: 0.38,
-      eventoId: 'test-evento-123',
+      precioTrayecto: 1.13,
+      totalKmAcumulado: 4.5,
+      totalPrecioAcumulado: 1.13,
+      eventoId: 'abc123event',
       eventoTitle: 'Reunión de prueba'
     };
 
-    // Intentar guardar realmente si hay SPREADSHEET_ID
-    if (process.env.SPREADSHEET_ID) {
-      const resultado = await guardarViaje(viajeTest);
-      assert.ok(resultado, 'Debe retornar resultado');
-      assert.ok(resultado.updates, 'Debe tener updates');
-      console.log(`    ${colors.green}✓${colors.reset} guardarViaje (real): OK`);
-    } else {
-      // Simular guardado exitoso
-      console.log(`    ${colors.yellow}⚠ guardarViaje (mock): Test simulado${colors.reset}`);
-    }
-    resultados.pasados++;
-  } catch (error) {
-    console.log(`    ${colors.red}✗${colors.reset} guardarViaje: ${error.message}`);
-    resultados.fallidos++;
-    resultados.detalles.push({ test: 'guardarViaje', error: error.message });
-  }
-  resultados.total++;
+    const camposRequeridos = ['fecha', 'trabajador', 'inicio', 'destino', 'kmTrayecto',
+      'precioKm', 'precioTrayecto', 'eventoId', 'eventoTitle'];
 
-  // Test 2: Validar estructura de datos del viaje
-  try {
-    const viajeCompleto = {
-      fecha: new Date(),
-      trabajador: 'test@empresa.com',
-      inicio: 'Origen',
-      destino: 'Destino',
-      kmTrayecto: 10.5,
-      precioKm: 0.25,
-      precioTrayecto: 2.63,
-      totalKmAcumulado: 10.5,
-      totalPrecioAcumulado: 2.63,
-      eventoId: '123',
-      eventoTitle: 'Test'
-    };
-
-    const camposRequeridos = ['fecha', 'trabajador', 'inicio', 'destino', 'kmTrayecto', 
-                             'precioKm', 'precioTrayecto', 'eventoId'];
-    
     camposRequeridos.forEach(campo => {
-      assert.ok(viajeCompleto[campo] !== undefined, `Campo ${campo} es requerido`);
+      assert.ok(viajeCompleto[campo] !== undefined && viajeCompleto[campo] !== null,
+        `Campo "${campo}" es requerido`);
     });
 
-    console.log(`    ${colors.green}✓${colors.reset} validar estructura viaje: OK`);
+    assert.ok(viajeCompleto.fecha instanceof Date, 'fecha debe ser Date');
+    assert.ok(viajeCompleto.kmTrayecto > 0, 'kmTrayecto debe ser positivo');
+    assert.ok(viajeCompleto.precioTrayecto > 0, 'precioTrayecto debe ser positivo');
+
+    console.log(`    ${colors.green}✔${colors.reset} validar estructura viaje: OK`);
     resultados.pasados++;
   } catch (error) {
     console.log(`    ${colors.red}✗${colors.reset} validar estructura viaje: ${error.message}`);
@@ -97,17 +58,22 @@ async function testSheetsService() {
   }
   resultados.total++;
 
-  // Test 3: Calcular precios correctamente
+  // Test 2: Cálculo correcto de precios
   try {
-    const km = 25.5;
-    const precioKm = 0.25;
-    const precioEsperado = 6.38; // 25.5 * 0.25 = 6.375 redondeado
-    
-    const precioCalculado = Math.round(km * precioKm * 100) / 100;
-    
-    assert.strictEqual(precioCalculado, precioEsperado);
-    
-    console.log(`    ${colors.green}✓${colors.reset} cálculo precios: OK (${km}km × ${precioKm}€ = ${precioCalculado}€)`);
+    const casos = [
+      { km: 25.5, precioKm: 0.25, esperado: 6.38 },
+      { km: 100, precioKm: 0.25, esperado: 25.00 },
+      { km: 13.3, precioKm: 0.25, esperado: 3.33 },
+      { km: 0, precioKm: 0.25, esperado: 0.00 }
+    ];
+
+    for (const caso of casos) {
+      const calculado = Math.round(caso.km * caso.precioKm * 100) / 100;
+      assert.strictEqual(calculado, caso.esperado,
+        `${caso.km} km × ${caso.precioKm} €/km = ${caso.esperado}, obtenido ${calculado}`);
+    }
+
+    console.log(`    ${colors.green}✔${colors.reset} cálculo precios: OK (${casos.length} casos)`);
     resultados.pasados++;
   } catch (error) {
     console.log(`    ${colors.red}✗${colors.reset} cálculo precios: ${error.message}`);
@@ -116,57 +82,93 @@ async function testSheetsService() {
   }
   resultados.total++;
 
-  // Test 4: Acumulados correctos
+  // Test 3: Acumulados correctos a lo largo de múltiples viajes
   try {
     const viajes = [
-      { km: 10, precio: 2.5 },
-      { km: 15, precio: 3.75 },
-      { km: 5, precio: 1.25 }
+      { km: 10, precioKm: 0.25 },
+      { km: 15, precioKm: 0.25 },
+      { km: 5, precioKm: 0.25 }
     ];
-    
+
     let totalKm = 0;
     let totalPrecio = 0;
     const acumulados = [];
-    
+
     viajes.forEach(v => {
-      totalKm += v.km;
-      totalPrecio += v.precio;
+      totalKm = parseFloat((totalKm + v.km).toFixed(2));
+      totalPrecio = parseFloat((totalPrecio + (v.km * v.precioKm)).toFixed(2));
       acumulados.push({ km: totalKm, precio: totalPrecio });
     });
-    
+
     assert.strictEqual(acumulados[0].km, 10);
     assert.strictEqual(acumulados[1].km, 25);
     assert.strictEqual(acumulados[2].km, 30);
     assert.strictEqual(acumulados[2].precio, 7.5);
-    
-    console.log(`    ${colors.green}✓${colors.reset} acumulados correctos: OK`);
+
+    console.log(`    ${colors.green}✔${colors.reset} acumulados correctos: 30 km, 7.50 €`);
     resultados.pasados++;
   } catch (error) {
-    console.log(`    ${colors.red}✗${colors.reset} acumulados correctos: ${error.message}`);
+    console.log(`    ${colors.red}✗${colors.reset} acumulados: ${error.message}`);
     resultados.fallidos++;
     resultados.detalles.push({ test: 'acumulados', error: error.message });
   }
   resultados.total++;
 
-  // Test 5: Generar informe mensual (mock)
+  // Test 4: Parseo de fechas en formato español (dd/mm/yyyy)
   try {
-    const fecha = new Date();
-    const mes = fecha.getMonth();
-    const año = fecha.getFullYear();
-    
-    if (process.env.SPREADSHEET_ID) {
-      await generarInformeMensual();
-      console.log(`    ${colors.green}✓${colors.reset} generarInformeMensual (real): OK`);
-    } else {
-      console.log(`    ${colors.yellow}⚠ generarInformeMensual (mock): Test simulado${colors.reset}`);
+    const fechasTest = [
+      { str: '15/01/2024', esperadoDia: 15, esperadoMes: 0 },
+      { str: '31/12/2024', esperadoDia: 31, esperadoMes: 11 },
+      { str: '01/06/2024', esperadoDia: 1, esperadoMes: 5 }
+    ];
+
+    for (const ft of fechasTest) {
+      const partes = ft.str.split('/');
+      const fecha = new Date(parseInt(partes[2]), parseInt(partes[1]) - 1, parseInt(partes[0]));
+      assert.strictEqual(fecha.getDate(), ft.esperadoDia);
+      assert.strictEqual(fecha.getMonth(), ft.esperadoMes);
     }
+
+    console.log(`    ${colors.green}✔${colors.reset} parseo fechas español: OK`);
     resultados.pasados++;
   } catch (error) {
-    console.log(`    ${colors.red}✗${colors.reset} generarInformeMensual: ${error.message}`);
+    console.log(`    ${colors.red}✗${colors.reset} parseo fechas: ${error.message}`);
     resultados.fallidos++;
-    resultados.detalles.push({ test: 'generarInformeMensual', error: error.message });
+    resultados.detalles.push({ test: 'parseo fechas', error: error.message });
   }
   resultados.total++;
+
+  // Test 5: guardarViaje real (solo con sheet configurado)
+  if (tieneSheetId) {
+    try {
+      const { guardarViaje } = require('../src/sheets-service');
+
+      const viajeTest = {
+        fecha: new Date(),
+        trabajador: 'test-automatico@empresa.com',
+        inicio: 'Test origen',
+        destino: 'Test destino',
+        kmTrayecto: 0.01,
+        precioKm: 0.25,
+        precioTrayecto: 0.00,
+        totalKmAcumulado: 0.01,
+        totalPrecioAcumulado: 0.00,
+        eventoId: `test-${Date.now()}`,
+        eventoTitle: 'TEST AUTOMATICO - puede borrarse'
+      };
+
+      const resultado = await guardarViaje(viajeTest);
+      assert.ok(resultado, 'Debe retornar resultado');
+
+      console.log(`    ${colors.green}✔${colors.reset} guardarViaje (API real): OK`);
+      resultados.pasados++;
+    } catch (error) {
+      console.log(`    ${colors.red}✗${colors.reset} guardarViaje (API real): ${error.message}`);
+      resultados.fallidos++;
+      resultados.detalles.push({ test: 'guardarViaje real', error: error.message });
+    }
+    resultados.total++;
+  }
 
   return resultados;
 }

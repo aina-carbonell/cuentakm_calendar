@@ -1,166 +1,217 @@
 /**
  * Script de configuración inicial del proyecto
+ * BUGS CORREGIDOS:
+ *   - const path = require('fs') era incorrecto (debería ser require('path'))
+ *   - spreadsheetId no estaba en scope al configurar trabajadores
+ *   - Mejor manejo de errores y flujo de usuario
  */
 
 const fs = require('fs');
-const path = require('fs');
+const path = require('path');         // BUG CORREGIDO: era require('fs') por error
 const readline = require('readline');
 const { google } = require('googleapis');
-const { inicializarSheet } = require('../src/sheets-service');
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-async function pregunta(pregunta) {
-  return new Promise((resolve) => {
-    rl.question(pregunta, resolve);
-  });
+const c = {
+  reset: '\x1b[0m', green: '\x1b[32m', red: '\x1b[31m',
+  yellow: '\x1b[33m', blue: '\x1b[34m', cyan: '\x1b[36m', bold: '\x1b[1m'
+};
+
+function log(msg, color = '') { console.log(`${color}${msg}${c.reset}`); }
+
+async function pregunta(texto) {
+  return new Promise(resolve => rl.question(texto, resolve));
+}
+
+async function preguntaOpcional(texto, porDefecto) {
+  const respuesta = await pregunta(`${texto} [${porDefecto}]: `);
+  return respuesta.trim() || porDefecto;
 }
 
 async function setup() {
-  console.log('\n🔧 Configuración del Sistema de Kilómetros\n');
-  
-  // 1. Verificar credenciales de Google
-  console.log('\n📁 Paso 1: Credenciales de Google');
-  console.log('Necesitarás:');
-  console.log('  - Un archivo credentials.json de Google Cloud Console');
-  console.log('  - Una API Key de Google Maps');
-  
-  const tieneCredenciales = await pregunta('\n¿Ya tienes el archivo credentials.json? (s/n): ');
-  
-  if (tieneCredenciales.toLowerCase() !== 's') {
-    console.log('\n📝 Instrucciones para obtener credenciales:');
-    console.log('1. Ve a https://console.cloud.google.com/');
-    console.log('2. Crea un proyecto nuevo o selecciona uno existente');
-    console.log('3. Habilita las APIs:');
-    console.log('   - Google Calendar API');
-    console.log('   - Google Sheets API');
-    console.log('   - Google Maps API');
-    console.log('4. Crea credenciales de tipo "Cuenta de servicio"');
-    console.log('5. Descarga el archivo JSON y renómbralo a credentials.json');
-    console.log('6. Colócalo en la raíz del proyecto');
-    
-    await pregunta('\nPresiona Enter cuando hayas completado estos pasos...');
+  log('\n🔧 Configuración del Sistema de Kilómetros\n', c.cyan + c.bold);
+  log('Este asistente te guiará por la configuración inicial.\n', c.reset);
+
+  // ── Empresa ────────────────────────────────────────────────
+  log('─── Información de la empresa ───', c.bold);
+  const empresaNombre = await preguntaOpcional('Nombre de la empresa', 'Mi Empresa');
+  const emailAdmin = await pregunta('Email del administrador (para notificaciones): ');
+  const precioKm = await preguntaOpcional('Precio por kilómetro (€)', '0.25');
+  const horaEjecucion = await preguntaOpcional('Hora de ejecución diaria (0-23)', '23');
+
+  // ── Google APIs ────────────────────────────────────────────
+  log('\n─── Configuración de Google APIs ───', c.bold);
+
+  if (!fs.existsSync('credentials.json')) {
+    log('\n⚠  No se encontró credentials.json', c.yellow);
+    log('\nPara obtenerlo:', c.reset);
+    log('  1. Ve a https://console.cloud.google.com/', c.reset);
+    log('  2. Crea/selecciona un proyecto', c.reset);
+    log('  3. Habilita: Google Calendar API, Google Sheets API, Google Maps API', c.reset);
+    log('  4. Crea credenciales → Cuenta de servicio', c.reset);
+    log('  5. Descarga el JSON y renómbralo a credentials.json en la raíz del proyecto', c.reset);
+    await pregunta('\nPresiona Enter cuando hayas completado esto...');
   }
-  
-  // 2. Configurar API Key de Maps
-  const apiKey = await pregunta('\n🗺️ Paso 2: Introduce tu Google Maps API Key: ');
-  
-  // 3. Crear archivo .env
-  console.log('\n📝 Paso 3: Creando archivo de configuración...');
-  
-  const envContent = `# Credenciales de Google
-GOOGLE_APPLICATION_CREDENTIALS=./credentials.json
-GOOGLE_MAPS_API_KEY=${apiKey}
 
-# ID del spreadsheet (se creará automáticamente)
-SPREADSHEET_ID=
+  if (!fs.existsSync('credentials.json')) {
+    log('credentials.json sigue sin encontrarse. El setup continuará pero algunas funciones no estarán disponibles.', c.yellow);
+  }
 
-# Configuración del sistema
-TIMEZONE=Europe/Madrid
-LOG_LEVEL=info
-`;
-  
+  const apiKey = await pregunta('Google Maps API Key: ');
+
+  // ── Crear .env ─────────────────────────────────────────────
+  log('\n─── Creando archivo .env ───', c.bold);
+
+  const envContent = [
+    '# === CREDENCIALES GOOGLE ===',
+    'GOOGLE_APPLICATION_CREDENTIALS=./credentials.json',
+    `GOOGLE_MAPS_API_KEY=${apiKey}`,
+    '',
+    '# === SPREADSHEET (se completará automáticamente) ===',
+    'SPREADSHEET_ID=',
+    '',
+    '# === CONFIGURACIÓN DE LA EMPRESA ===',
+    `EMPRESA_NOMBRE=${empresaNombre}`,
+    `EMAIL_ADMIN=${emailAdmin}`,
+    `PRECIO_POR_KM=${precioKm}`,
+    `HORA_EJECUCION=${horaEjecucion}`,
+    '',
+    '# === SISTEMA ===',
+    'TIMEZONE=Europe/Madrid',
+    'LOG_LEVEL=INFO',
+    'NODE_ENV=production',
+    ''
+  ].join('\n');
+
   fs.writeFileSync('.env', envContent);
-  console.log('✅ Archivo .env creado');
-  
-  // 4. Crear spreadsheet inicial
-  console.log('\n📊 Paso 4: Creando Google Sheet...');
-  
-  try {
-    const auth = new google.auth.GoogleAuth({
-      keyFile: './credentials.json',
-      scopes: ['https://www.googleapis.com/auth/spreadsheets']
-    });
-    
-    const sheets = google.sheets({ version: 'v4', auth });
-    
-    const response = await sheets.spreadsheets.create({
-      resource: {
-        properties: {
-          title: 'Registro de Kilómetros - Empresa'
+  log('✔ Archivo .env creado', c.green);
+
+  // ── Crear Google Sheet ──────────────────────────────────────
+  log('\n─── Creando Google Sheet ───', c.bold);
+
+  let spreadsheetId = null;  // BUG CORREGIDO: declarado aquí para estar en scope
+
+  if (fs.existsSync('credentials.json')) {
+    try {
+      const auth = new google.auth.GoogleAuth({
+        keyFile: './credentials.json',
+        scopes: ['https://www.googleapis.com/auth/spreadsheets']
+      });
+
+      const sheets = google.sheets({ version: 'v4', auth });
+
+      const response = await sheets.spreadsheets.create({
+        resource: {
+          properties: { title: `Registro de Kilómetros - ${empresaNombre}` }
         }
-      }
-    });
-    
-    const spreadsheetId = response.data.spreadsheetId;
-    
-    // Actualizar .env con el ID
-    let envActualizado = envContent.replace('SPREADSHEET_ID=', `SPREADSHEET_ID=${spreadsheetId}`);
-    fs.writeFileSync('.env', envActualizado);
-    
-    console.log(`✅ Spreadsheet creado: https://docs.google.com/spreadsheets/d/${spreadsheetId}`);
-    
-    // Inicializar estructura
-    await inicializarSheet(spreadsheetId);
-    
-  } catch (error) {
-    console.error('❌ Error creando spreadsheet:', error.message);
-    console.log('Asegúrate de que el archivo credentials.json es válido y tiene los permisos correctos.');
-    process.exit(1);
+      });
+
+      spreadsheetId = response.data.spreadsheetId;
+
+      // Actualizar .env con el ID del sheet
+      const envActualizado = envContent.replace('SPREADSHEET_ID=', `SPREADSHEET_ID=${spreadsheetId}`);
+      fs.writeFileSync('.env', envActualizado);
+
+      log(`✔ Spreadsheet creado: https://docs.google.com/spreadsheets/d/${spreadsheetId}`, c.green);
+
+      // Inicializar estructura del sheet
+      const { inicializarSheet } = require('../src/sheets-service');
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = './credentials.json';
+      process.env.SPREADSHEET_ID = spreadsheetId;
+      await inicializarSheet(spreadsheetId);
+      log('✔ Estructura del sheet creada', c.green);
+
+    } catch (error) {
+      log(`✗ Error creando spreadsheet: ${error.message}`, c.red);
+      log('Puedes crear el sheet manualmente y añadir SPREADSHEET_ID al .env', c.yellow);
+    }
+  } else {
+    log('⚠  Sin credentials.json, crea el sheet manualmente y añade su ID al .env', c.yellow);
   }
-  
-  // 5. Configurar trabajadores
-  console.log('\n👥 Paso 5: Configuración de trabajadores');
-  
-  const numTrabajadores = await pregunta('¿Cuántos trabajadores quieres configurar? ');
-  
+
+  // ── Configurar trabajadores ─────────────────────────────────
+  log('\n─── Configuración de trabajadores ───', c.bold);
+
+  const numStr = await preguntaOpcional('¿Cuántos trabajadores quieres configurar ahora?', '1');
+  const numTrabajadores = parseInt(numStr) || 1;
+
   const trabajadores = [];
-  for (let i = 0; i < parseInt(numTrabajadores); i++) {
-    console.log(`\nTrabajador ${i + 1}:`);
+  for (let i = 0; i < numTrabajadores; i++) {
+    log(`\nTrabajador ${i + 1}:`, c.bold);
     const email = await pregunta('  Email: ');
-    const oficina = await pregunta('  Dirección de oficina: ');
-    const precio = await pregunta('  Precio por km (por defecto 0.25): ') || '0.25';
-    
+    const oficina = await pregunta('  Dirección de oficina (completa): ');
+    const precio = await preguntaOpcional('  Precio por km (€)', precioKm);
+    const calendarId = await preguntaOpcional('  ID del calendario', 'primary');
+
     trabajadores.push({
-      email,
-      oficina,
-      precio: parseFloat(precio)
+      email: email.trim(),
+      oficina: oficina.trim(),
+      precioKm: parseFloat(precio) || 0.25,
+      calendarId: calendarId.trim(),
+      activo: 'Sí'
     });
   }
-  
-  // Guardar configuración en el sheet
-  try {
-    const auth = new google.auth.GoogleAuth({
-      keyFile: './credentials.json',
-      scopes: ['https://www.googleapis.com/auth/spreadsheets']
-    });
-    
-    const sheets = google.sheets({ version: 'v4', auth });
-    
-    const values = trabajadores.map(t => [
-      t.email,
-      t.oficina,
-      t.precio,
-      'primary',
-      'SÍ',
-      'Configurado automáticamente'
-    ]);
-    
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: spreadsheetId,
-      range: 'Trabajadores!A2:F',
-      valueInputOption: 'USER_ENTERED',
-      resource: { values }
-    });
-    
-    console.log('✅ Trabajadores configurados en el sheet');
-    
-  } catch (error) {
-    console.error('❌ Error configurando trabajadores:', error.message);
+
+  // Guardar trabajadores en el sheet si está disponible
+  if (spreadsheetId && fs.existsSync('credentials.json')) {
+    try {
+      const auth = new google.auth.GoogleAuth({
+        keyFile: './credentials.json',
+        scopes: ['https://www.googleapis.com/auth/spreadsheets']
+      });
+
+      const sheets = google.sheets({ version: 'v4', auth });
+
+      const values = trabajadores.map(t => [
+        t.email, t.oficina, t.precioKm, t.calendarId, t.activo, 'Configurado en setup'
+      ]);
+
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: 'Trabajadores!A2:F',
+        valueInputOption: 'USER_ENTERED',
+        resource: { values }
+      });
+
+      log('✔ Trabajadores guardados en el sheet', c.green);
+
+    } catch (error) {
+      log(`⚠  No se pudieron guardar los trabajadores en el sheet: ${error.message}`, c.yellow);
+    }
   }
-  
-  console.log('\n✨ ¡Configuración completada!');
-  console.log('\nPróximos pasos:');
-  console.log('1. Comparte el spreadsheet con los trabajadores');
-  console.log('2. Configura los triggers en Google Apps Script');
-  console.log('3. Ejecuta "npm run deploy" para desplegar');
-  console.log('\n📖 Revisa docs/INSTALLATION.md para más detalles\n');
-  
+
+  // Guardar también en archivo local como backup
+  const configLocal = path.join('data', 'trabajadores-config.json');
+  if (!fs.existsSync('data')) fs.mkdirSync('data', { recursive: true });
+  fs.writeFileSync(configLocal, JSON.stringify(trabajadores, null, 2));
+  log('✔ Configuración de trabajadores guardada localmente', c.green);
+
+  // ── Crear directorios necesarios ────────────────────────────
+  ['logs', 'data'].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  });
+
+  // ── Resumen final ───────────────────────────────────────────
+  log('\n══════════════════════════════════════════', c.cyan + c.bold);
+  log('  ✨ ¡Configuración completada!', c.green + c.bold);
+  log('══════════════════════════════════════════\n', c.cyan + c.bold);
+  log('Próximos pasos:', c.bold);
+  log('  1. npm run deploy  → Verificar y desplegar', c.reset);
+  log('  2. npm start       → Prueba de ejecución manual', c.reset);
+  log('  3. npm test        → Ejecutar suite de tests', c.reset);
+
+  if (spreadsheetId) {
+    log(`\n  📊 Tu sheet: https://docs.google.com/spreadsheets/d/${spreadsheetId}`, c.blue);
+  }
+
+  log('\n  📖 Lee INSTALLATION.md para más detalles\n', c.reset);
+
   rl.close();
 }
 
-// Ejecutar setup
-setup();
+setup().catch(error => {
+  console.error('\n✗ Error en setup:', error.message);
+  rl.close();
+  process.exit(1);
+});

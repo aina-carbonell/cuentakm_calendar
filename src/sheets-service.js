@@ -1,5 +1,9 @@
 /**
  * Servicio de Google Sheets para almacenar registros
+ * BUGS CORREGIDOS:
+ *   - formatearSheet y generarInformeMensual exportadas correctamente con firma correcta
+ *   - formatearSheet ahora funciona sin argumentos (usa env vars)
+ *   - Encoding de caracteres especiales en nombres de hojas
  */
 
 const { google } = require('googleapis');
@@ -13,7 +17,6 @@ async function autenticarSheets() {
     keyFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
-  
   return google.sheets({ version: 'v4', auth });
 }
 
@@ -24,8 +27,9 @@ async function guardarViaje(viaje) {
   try {
     const sheets = await autenticarSheets();
     const spreadsheetId = process.env.SPREADSHEET_ID;
-    
-    // Preparar fila
+
+    if (!spreadsheetId) throw new Error('SPREADSHEET_ID no configurado');
+
     const values = [[
       viaje.fecha.toLocaleDateString('es-ES'),
       viaje.trabajador,
@@ -37,86 +41,78 @@ async function guardarViaje(viaje) {
       viaje.totalKmAcumulado,
       viaje.totalPrecioAcumulado,
       viaje.eventoTitle,
+      viaje.eventoId,
       new Date().toLocaleString('es-ES')
     ]];
-    
-    // Añadir fila al sheet
+
     const response = await sheets.spreadsheets.values.append({
-      spreadsheetId: spreadsheetId,
-      range: 'RegistroViajes!A:K',
+      spreadsheetId,
+      range: 'RegistroViajes!A:L',
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
       resource: { values }
     });
-    
-    logger.info(`Viaje guardado en fila ${response.data.updates.updatedRange}`);
-    
+
+    logger.info(`Viaje guardado: ${viaje.inicio} → ${viaje.destino} (${viaje.kmTrayecto} km)`);
     return response.data;
-    
+
   } catch (error) {
-    logger.error('Error guardando viaje:', error);
+    logger.error('Error guardando viaje', error);
     throw error;
   }
 }
 
 /**
- * Inicializa la estructura del sheet
+ * Inicializa la estructura del sheet con todas las hojas necesarias
  */
 async function inicializarSheet(spreadsheetId) {
   try {
     const sheets = await autenticarSheets();
-    
-    // Crear hojas necesarias
-    const hojas = [
-      {
-        properties: {
-          title: 'RegistroViajes',
-          gridProperties: { frozenRowCount: 1 }
-        }
-      },
-      {
-        properties: {
-          title: 'Configuración',
-          gridProperties: { frozenRowCount: 1 }
-        }
-      },
-      {
-        properties: {
-          title: 'Trabajadores',
-          gridProperties: { frozenRowCount: 1 }
-        }
-      },
-      {
-        properties: {
-          title: 'HistóricoMensual',
-          gridProperties: { frozenRowCount: 1 }
-        }
-      }
+    const sid = spreadsheetId || process.env.SPREADSHEET_ID;
+
+    // Obtener hojas existentes
+    const infoSheet = await sheets.spreadsheets.get({ spreadsheetId: sid });
+    const hojasExistentes = infoSheet.data.sheets.map(s => s.properties.title);
+
+    const hojasNecesarias = [
+      { title: 'RegistroViajes', sheetId: 0 },
+      { title: 'Configuracion', sheetId: 1 },
+      { title: 'Trabajadores', sheetId: 2 },
+      { title: 'HistoricoMensual', sheetId: 3 }
     ];
-    
-    // Añadir hojas si no existen
-    for (const hoja of hojas) {
-      try {
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId: spreadsheetId,
-          resource: {
-            requests: [{
-              addSheet: hoja
-            }]
+
+    // Crear hojas que no existan
+    const requests = [];
+    let nextSheetId = 10;
+
+    for (const hoja of hojasNecesarias) {
+      if (!hojasExistentes.includes(hoja.title)) {
+        requests.push({
+          addSheet: {
+            properties: {
+              title: hoja.title,
+              gridProperties: { frozenRowCount: 1 }
+            }
           }
         });
-      } catch (e) {
-        // La hoja ya existe, ignorar
       }
     }
-    
+
+    if (requests.length > 0) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: sid,
+        resource: { requests }
+      });
+    }
+
     // Configurar cabeceras
-    await configurarCabeceras(sheets, spreadsheetId);
-    
+    await configurarCabeceras(sheets, sid);
+
     logger.info('Sheet inicializado correctamente');
-    
+    return true;
+
   } catch (error) {
-    logger.error('Error inicializando sheet:', error);
+    logger.error('Error inicializando sheet', error);
     throw error;
   }
 }
@@ -126,155 +122,221 @@ async function inicializarSheet(spreadsheetId) {
  */
 async function configurarCabeceras(sheets, spreadsheetId) {
   const cabeceras = {
-    RegistroViajes: [
-      ['Fecha', 'Trabajador', 'Inicio', 'Destino', 'Km Trayecto', 
-       'Precio/km', 'Precio Trayecto', 'Total Km', 'Total Precio', 
-       'Evento', 'Registrado']
-    ],
-    Configuración: [
-      ['Parámetro', 'Valor', 'Descripción', 'Última Actualización']
-    ],
-    Trabajadores: [
-      ['Email', 'Oficina', 'Precio/km', 'Calendario ID', 'Activo', 'Notas']
-    ],
-    HistóricoMensual: [
-      ['Mes', 'Año', 'Total Km', 'Total Precio', 'Nº Viajes', 'Nº Trabajadores']
-    ]
+    'RegistroViajes': [['Fecha', 'Trabajador', 'Inicio', 'Destino', 'Km Trayecto',
+      'Precio/km', 'Precio Trayecto', 'Total Km Acum.', 'Total Precio Acum.',
+      'Evento', 'ID Evento', 'Registrado el']],
+    'Configuracion': [['Parámetro', 'Valor', 'Descripción', 'Última Actualización']],
+    'Trabajadores': [['Email', 'Oficina', 'Precio/km', 'Calendario ID', 'Activo', 'Notas']],
+    'HistoricoMensual': [['Mes', 'Año', 'Total Km', 'Total Precio (€)', 'Nº Viajes', 'Nº Trabajadores', 'Generado el']]
   };
-  
+
   for (const [hoja, cabecera] of Object.entries(cabeceras)) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: spreadsheetId,
-      range: `${hoja}!A1:${String.fromCharCode(64 + cabecera[0].length)}1`,
-      valueInputOption: 'USER_ENTERED',
-      resource: { values: cabecera }
-    });
+    try {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${hoja}!A1:${String.fromCharCode(64 + cabecera[0].length)}1`,
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: cabecera }
+      });
+    } catch (e) {
+      logger.warn(`No se pudo actualizar cabecera de ${hoja}: ${e.message}`);
+    }
   }
-  
-  // Formatear cabeceras
-  await formatearSheet(sheets, spreadsheetId);
 }
 
 /**
  * Formatea el sheet (colores, negritas, formatos numéricos)
+ * BUG CORREGIDO: firma corregida para funcionar con o sin argumentos
  */
-async function formatearSheet(sheets, spreadsheetId) {
+async function formatearSheet(sheetsInstance, spreadsheetId) {
   try {
+    const sheets = sheetsInstance || await autenticarSheets();
+    const sid = spreadsheetId || process.env.SPREADSHEET_ID;
+
+    if (!sid) throw new Error('SPREADSHEET_ID no configurado');
+
+    // Obtener el sheetId real de RegistroViajes
+    const info = await sheets.spreadsheets.get({ spreadsheetId: sid });
+    const hoja = info.data.sheets.find(s => s.properties.title === 'RegistroViajes');
+    if (!hoja) return;
+
+    const sheetId = hoja.properties.sheetId;
+
     const requests = [
       // Negrita en cabeceras
       {
         repeatCell: {
-          range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 },
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
           cell: { userEnteredFormat: { textFormat: { bold: true } } },
           fields: 'userEnteredFormat.textFormat.bold'
         }
       },
-      // Color de fondo para cabeceras
+      // Color de fondo azul suave para cabeceras
       {
         repeatCell: {
-          range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 },
-          cell: { userEnteredFormat: { backgroundColor: { red: 0.9, green: 0.9, blue: 0.9 } } },
-          fields: 'userEnteredFormat.backgroundColor'
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 0.23, green: 0.47, blue: 0.75 },
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }
+            }
+          },
+          fields: 'userEnteredFormat(backgroundColor,textFormat)'
         }
       },
-      // Formato número para km
+      // Formato número para km (columna E)
       {
         repeatCell: {
-          range: { sheetId: 0, startColumnIndex: 4, endColumnIndex: 5 },
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 4, endColumnIndex: 5 },
           cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0.00 "km"' } } },
           fields: 'userEnteredFormat.numberFormat'
         }
       },
-      // Formato moneda para precios
+      // Formato moneda para precios (columnas G, H, I)
       {
         repeatCell: {
-          range: { sheetId: 0, startColumnIndex: 5, endColumnIndex: 9 },
-          cell: { userEnteredFormat: { numberFormat: { type: 'CURRENCY', pattern: '#,##0.00 "€"' } } },
+          range: { sheetId, startRowIndex: 1, startColumnIndex: 6, endColumnIndex: 9 },
+          cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '#,##0.00 "€"' } } },
           fields: 'userEnteredFormat.numberFormat'
         }
       },
       // Autoajustar columnas
       {
         autoResizeDimensions: {
-          dimensions: { sheetId: 0, dimension: 'COLUMNS', startIndex: 0, endIndex: 11 }
+          dimensions: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: 12 }
         }
       }
     ];
-    
+
     await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: spreadsheetId,
+      spreadsheetId: sid,
       resource: { requests }
     });
-    
+
     logger.info('Sheet formateado correctamente');
-    
+
   } catch (error) {
-    logger.error('Error formateando sheet:', error);
+    logger.error('Error formateando sheet', error);
   }
 }
 
 /**
- * Genera informe mensual
+ * Genera informe mensual en la hoja HistoricoMensual
  */
 async function generarInformeMensual() {
   try {
     const sheets = await autenticarSheets();
     const spreadsheetId = process.env.SPREADSHEET_ID;
-    
+
+    if (!spreadsheetId) throw new Error('SPREADSHEET_ID no configurado');
+
     const fecha = new Date();
-    const mes = fecha.toLocaleString('es-ES', { month: 'long' });
-    const año = fecha.getFullYear();
-    
-    // Obtener datos del mes
+    const { nombreMes } = require('./utils/date-utils');
+    const mes = nombreMes(fecha.getMonth());
+    const anio = fecha.getFullYear();
+
+    // Obtener datos del mes actual desde RegistroViajes
     const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: spreadsheetId,
-      range: 'RegistroViajes!A:K',
+      spreadsheetId,
+      range: 'RegistroViajes!A:L',
       majorDimension: 'ROWS'
     });
-    
-    const filas = response.data.values || [];
-    
-    // Calcular totales del mes actual
+
+    const filas = (response.data.values || []).slice(1); // Saltar cabecera
+
     let totalKm = 0;
     let totalPrecio = 0;
-    let viajesUnicos = new Set();
-    let trabajadoresUnicos = new Set();
-    
-    for (let i = 1; i < filas.length; i++) {
-      const fila = filas[i];
-      if (fila && fila[0]) {
-        const fechaRegistro = new Date(fila[0].split('/').reverse().join('-'));
-        if (fechaRegistro.getMonth() === fecha.getMonth() && 
-            fechaRegistro.getFullYear() === fecha.getFullYear()) {
-          totalKm += parseFloat(fila[4]) || 0;
-          totalPrecio += parseFloat(fila[6]) || 0;
-          viajesUnicos.add(fila[9]); // ID del evento
-          trabajadoresUnicos.add(fila[1]); // Email trabajador
-        }
+    const viajesUnicos = new Set();
+    const trabajadoresUnicos = new Set();
+
+    for (const fila of filas) {
+      if (!fila || !fila[0]) continue;
+
+      // Parsear fecha en formato dd/mm/yyyy
+      const partes = fila[0].split('/');
+      if (partes.length !== 3) continue;
+
+      const fechaRegistro = new Date(
+        parseInt(partes[2]),
+        parseInt(partes[1]) - 1,
+        parseInt(partes[0])
+      );
+
+      if (fechaRegistro.getMonth() === fecha.getMonth() &&
+        fechaRegistro.getFullYear() === fecha.getFullYear()) {
+        totalKm += parseFloat(fila[4]) || 0;
+        totalPrecio += parseFloat(fila[6]) || 0;
+        if (fila[10]) viajesUnicos.add(fila[10]); // ID Evento
+        if (fila[1]) trabajadoresUnicos.add(fila[1]); // Email
       }
     }
-    
-    // Guardar resumen mensual
+
     const resumen = [[
       mes,
-      año,
+      anio,
       totalKm.toFixed(2),
       totalPrecio.toFixed(2),
       viajesUnicos.size,
-      trabajadoresUnicos.size
+      trabajadoresUnicos.size,
+      new Date().toLocaleString('es-ES')
     ]];
-    
+
     await sheets.spreadsheets.values.append({
-      spreadsheetId: spreadsheetId,
-      range: 'HistóricoMensual!A:F',
+      spreadsheetId,
+      range: 'HistoricoMensual!A:G',
       valueInputOption: 'USER_ENTERED',
       resource: { values: resumen }
     });
-    
-    logger.info(`Informe mensual generado: ${mes} ${año} - ${totalKm} km, ${totalPrecio} €`);
-    
+
+    logger.info(`Informe mensual generado: ${mes} ${anio} - ${totalKm.toFixed(2)} km, ${totalPrecio.toFixed(2)} €`);
+    return { mes, anio, totalKm, totalPrecio, numViajes: viajesUnicos.size, numTrabajadores: trabajadoresUnicos.size };
+
   } catch (error) {
-    logger.error('Error generando informe mensual:', error);
+    logger.error('Error generando informe mensual', error);
+    throw error;
+  }
+}
+
+/**
+ * Obtiene el resumen de un trabajador para un rango de fechas
+ */
+async function obtenerResumenTrabajador(emailTrabajador, fechaInicio, fechaFin) {
+  try {
+    const sheets = await autenticarSheets();
+    const spreadsheetId = process.env.SPREADSHEET_ID;
+
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: 'RegistroViajes!A:L',
+      majorDimension: 'ROWS'
+    });
+
+    const filas = (response.data.values || []).slice(1);
+    let totalKm = 0;
+    let totalPrecio = 0;
+    const viajes = [];
+
+    for (const fila of filas) {
+      if (!fila || fila[1] !== emailTrabajador) continue;
+
+      const partes = (fila[0] || '').split('/');
+      if (partes.length !== 3) continue;
+
+      const fechaViaje = new Date(parseInt(partes[2]), parseInt(partes[1]) - 1, parseInt(partes[0]));
+
+      if (fechaViaje >= fechaInicio && fechaViaje <= fechaFin) {
+        const km = parseFloat(fila[4]) || 0;
+        const precio = parseFloat(fila[6]) || 0;
+        totalKm += km;
+        totalPrecio += precio;
+        viajes.push({ fecha: fila[0], inicio: fila[2], destino: fila[3], km, precio, evento: fila[9] });
+      }
+    }
+
+    return { emailTrabajador, totalKm, totalPrecio, numViajes: viajes.length, viajes };
+
+  } catch (error) {
+    logger.error('Error obteniendo resumen trabajador', error);
     throw error;
   }
 }
@@ -283,5 +345,6 @@ module.exports = {
   guardarViaje,
   inicializarSheet,
   formatearSheet,
-  generarInformeMensual
+  generarInformeMensual,
+  obtenerResumenTrabajador
 };
